@@ -1547,6 +1547,46 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
+/* Localize progress strip */
+.loc-progress {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 20px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}
+.loc-progress-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+.loc-progress-track {
+  flex: 1 1 auto;
+  height: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.loc-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.loc-progress-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
 /* Action bar */
 .localize-actionbar {
   flex: 0 0 auto;

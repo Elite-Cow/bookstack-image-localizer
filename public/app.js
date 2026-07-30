@@ -1564,6 +1564,10 @@ function initLocalize() {
   loc.book = document.getElementById('loc-book');
   loc.chapter = document.getElementById('loc-chapter');
   loc.page = document.getElementById('loc-page');
+  loc.progress = document.getElementById('loc-progress');
+  loc.progressLabel = document.getElementById('loc-progress-label');
+  loc.progressFill = document.getElementById('loc-progress-fill');
+  loc.progressCount = document.getElementById('loc-progress-count');
   loc.scanBtn = document.getElementById('loc-scan-btn');
   loc.summary = document.getElementById('loc-summary');
   loc.results = document.getElementById('loc-results');
@@ -2035,6 +2039,20 @@ function updateSelCount() {
   const n = loc.results.querySelectorAll('.loc-img-check:checked').length;
   loc.selCount.textContent = `${n} image${n === 1 ? '' : 's'} selected`;
   loc.applyBtn.disabled = n === 0;
+  syncSelectAll();
+}
+
+// Keep the "Select all reachable" checkbox in step with the actual selection —
+// checked when every selectable image is selected (e.g. right after a scan,
+// which pre-selects them), indeterminate when only some are.
+function syncSelectAll() {
+  const eligible = [...loc.results.querySelectorAll('.loc-img-row')]
+    .filter((r) => r.querySelector('.badge-ok') || r.querySelector('.badge-bridge'))
+    .map((r) => r.querySelector('.loc-img-check'))
+    .filter((cb) => cb && !cb.disabled);
+  const checked = eligible.filter((cb) => cb.checked).length;
+  loc.selectAll.checked = eligible.length > 0 && checked === eligible.length;
+  loc.selectAll.indeterminate = checked > 0 && checked < eligible.length;
 }
 
 function getSelections() {
@@ -2077,10 +2095,13 @@ async function runApply() {
 
   let okCount = 0;
   let failCount = 0;
+  let processed = 0;
+  updateLocProgress(processed, total, 'Starting…');
 
   for (const sel of selections) {
     const card = loc.results.querySelector(`.loc-page-card[data-page="${sel.pageId}"]`);
     const statusEl = markCardWorking(card);
+    updateLocProgress(processed, total, sel.name);
     try {
       // For images the server probe couldn't reach, fetch the bytes through the
       // browser bridge (passes Cloudflare) and hand them to the server.
@@ -2112,8 +2133,11 @@ async function runApply() {
       }
       toast('error', `Page "${sel.name}": ${err.message}`);
     }
+    processed += sel.urls.length;
+    updateLocProgress(processed, total);
   }
 
+  finishLocProgress(okCount, failCount);
   setBtnLoading(loc.applyBtn, false);
   loc.scanBtn.disabled = false;
   updateSelCount();
@@ -2123,6 +2147,27 @@ async function runApply() {
       (failCount ? `, ${failCount} failed (see rows)` : '') +
       '. Re-scan to confirm.'
   );
+}
+
+// Progress strip above the action bar — advances as each page's images finish.
+function updateLocProgress(processed, total, pageName) {
+  loc.progress.hidden = false;
+  // Keep a sliver visible from the start so the bar reads as "working".
+  const pct = Math.max(3, Math.round((processed / total) * 100));
+  loc.progressFill.style.width = `${pct}%`;
+  loc.progressCount.textContent = `${processed} / ${total} images`;
+  if (pageName) loc.progressLabel.textContent = `Localizing — ${pageName}`;
+}
+
+function finishLocProgress(okCount, failCount) {
+  loc.progressFill.style.width = '100%';
+  loc.progressLabel.textContent = failCount
+    ? `Finished — ${okCount} localized, ${failCount} failed`
+    : `Finished — ${okCount} localized`;
+  setTimeout(() => {
+    loc.progress.hidden = true;
+    loc.progressFill.style.width = '0%';
+  }, 2500);
 }
 
 function markCardWorking(card) {

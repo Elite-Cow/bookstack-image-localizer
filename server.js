@@ -18,7 +18,7 @@ const __dirname = (() => {
 
 const IS_PACKAGED = isSea();
 const APP_ID = 'bookstack-companion';
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 
 // Editions: the packaged (shared) app is image localization only; running from
