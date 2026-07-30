@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BookStack Companion</title>
+
+  <!-- All assets are local — the app works fully offline. -->
+  <link rel="stylesheet" href="vendor/fonts.css" />
+  <link rel="stylesheet" href="vendor/hljs-theme.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 5.5C10 3.8 7 3.2 3.5 3.6v14.2c3.5-.4 6.5.2 8.5 1.9 2-1.7 5-2.3 8.5-1.9V3.6C17 3.2 14 3.8 12 5.5Z" />
+        <path d="M12 5.5v14.2" />
+      </svg>
+      <span class="brand-title">BookStack <em>Companion</em></span>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="publish" role="tab">Publish</button>
+      <button class="tab" data-view="localize" role="tab">Localize Images</button>
+    </nav>
+
+    <div class="header-right">
+      <div id="connection-status" class="conn-status conn-checking" title="Checking connection…">
+        <span class="conn-dot"></span>
+        <span class="conn-label">Checking…</span>
+      </div>
+      <button id="settings-btn" class="icon-btn" type="button" title="Connection settings" aria-label="Connection settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================== PUBLISH VIEW ===================== -->
+  <main id="view-publish" class="view view-active layout">
+    <!-- Left: Destination -->
+    <section class="panel panel-destination" aria-label="Destination">
+      <h2 class="panel-heading">Destination</h2>
+
+      <div class="search-box">
+        <span class="search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <input
+          id="page-search"
+          class="text-input search-input"
+          type="search"
+          placeholder="Search all pages to edit…"
+          autocomplete="off"
+          aria-label="Search pages"
+        />
+        <div id="search-results" class="search-results" role="listbox" hidden></div>
+      </div>
+      <div class="dest-divider"><span>or browse</span></div>
+
+      <label class="field-label" for="book-select">Book</label>
+      <select id="book-select" class="select">
+        <option value="">Loading books…</option>
+      </select>
+
+      <label class="field-label" for="chapter-select">Chapter</label>
+      <select id="chapter-select" class="select" disabled>
+        <option value="">Select a book first</option>
+      </select>
+
+      <label class="field-label" for="page-select">Page</label>
+      <select id="page-select" class="select" disabled>
+        <option value="">✚ New page</option>
+      </select>
+
+      <button id="refresh-btn" class="btn btn-secondary" type="button">
+        <span class="btn-spinner" hidden></span>
+        Refresh
+      </button>
+
+      <p class="hint" id="dest-hint">
+        Choose a book and chapter to publish a <strong>new</strong> page — or pick an
+        existing <strong>Page</strong> to edit it in place.
+      </p>
+    </section>
+
+    <!-- Center: Content Input -->
+    <section class="panel panel-input" aria-label="Content input">
+      <div class="panel-head-row">
+        <h2 class="panel-heading">Content</h2>
+        <a id="edit-badge" class="edit-badge" hidden target="_blank" rel="noopener"></a>
+      </div>
+
+      <label class="field-label" for="title-input">Title <span class="req">*</span></label>
+      <input
+        id="title-input"
+        class="text-input"
+        type="text"
+        placeholder="Page title…"
+        autocomplete="off"
+      />
+
+      <label class="field-label" for="template-select">Template</label>
+      <select id="template-select" class="select"></select>
+      <p id="template-desc" class="template-desc"></p>
+
+      <div class="editor-shell">
+        <div id="editor-toolbar" class="editor-toolbar" role="toolbar" aria-label="Formatting"></div>
+        <textarea
+          id="content-area"
+          class="paste-area"
+          placeholder="Write or paste Markdown…  Use the toolbar above, or shortcuts: Ctrl+B, Ctrl+I, Ctrl+K."
+          spellcheck="false"
+        ></textarea>
+        <div class="editor-statusbar">
+          <span id="editor-stats" class="editor-stats">0 words</span>
+          <span class="statusbar-spacer"></span>
+          <span id="dirty-indicator" class="dirty-indicator" hidden>● Unsaved changes</span>
+          <button id="fullscreen-btn" class="tb-btn" type="button" title="Toggle focus mode">⤢</button>
+        </div>
+      </div>
+
+      <div class="input-actions">
+        <button id="apply-template-btn" class="btn btn-secondary" type="button">
+          Apply Template
+        </button>
+        <div class="actions-right">
+          <button id="new-page-btn" class="btn btn-secondary" type="button" hidden>
+            New page
+          </button>
+          <button id="publish-btn" class="btn btn-primary" type="button" disabled>
+            <span class="btn-spinner" hidden></span>
+            <span class="publish-label">Publish →</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right: Preview -->
+    <section class="panel panel-preview" aria-label="Preview">
+      <h2 class="panel-heading">Preview</h2>
+      <div id="preview" class="preview markdown-body">
+        <p class="preview-empty">Preview will appear here as you type.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===================== LOCALIZE VIEW ===================== -->
+  <main id="view-localize" class="view localize-view">
+    <div class="localize-toolbar">
+      <div class="scope-controls">
+        <div class="scope-field">
+          <label class="field-label" for="loc-book">Book</label>
+          <select id="loc-book" class="select"><option value="">All books</option></select>
+        </div>
+        <div class="scope-field">
+          <label class="field-label" for="loc-chapter">Chapter</label>
+          <select id="loc-chapter" class="select" disabled><option value="">All chapters</option></select>
+        </div>
+        <div class="scope-field">
+          <label class="field-label" for="loc-page">Page</label>
+          <select id="loc-page" class="select" disabled><option value="">All pages</option></select>
+        </div>
+        <button id="loc-scan-btn" class="btn btn-primary" type="button">
+          <span class="btn-spinner" hidden></span>
+          Scan
+        </button>
+      </div>
+
+      <div id="loc-ext-status" class="loc-ext-status ext-off">
+        <span class="ext-dot"></span> Checking for browser bridge…
+      </div>
+
+      <details class="loc-advanced">
+        <summary>Advanced — cookies for Cloudflare-protected hosts (optional)</summary>
+        <div class="loc-adv-body">
+          <p class="hint">
+            With the <strong>browser bridge</strong> extension installed, blocked images
+            are fetched through your browser automatically — no cookie needed. The fields
+            below are a manual fallback if you don't install it: paste the
+            <code>cf_clearance</code> cookie (DevTools → <em>Application → Cookies</em>);
+            the User-Agent is filled in for you.
+          </p>
+          <label class="field-label" for="loc-ua">Browser User-Agent</label>
+          <input
+            id="loc-ua"
+            class="text-input"
+            type="text"
+            placeholder="Mozilla/5.0 (Windows NT 10.0; …) Chrome/… Safari/…"
+            autocomplete="off"
+          />
+          <div id="loc-cookie-rows" class="loc-cookie-rows"></div>
+          <button id="loc-add-cookie" class="btn btn-secondary" type="button">+ Add cookie</button>
+        </div>
+      </details>
+
+      <div id="loc-summary" class="loc-summary"></div>
+    </div>
+
+    <div class="localize-body">
+      <div id="loc-results" class="loc-results">
+        <p class="loc-empty">
+          Choose a scope and click <strong>Scan</strong> to find externally-hosted
+          images. Scanning changes nothing — it only reports what it finds.
+        </p>
+      </div>
+    </div>
+
+    <div class="localize-actionbar">
+      <label class="loc-checkline">
+        <input type="checkbox" id="loc-select-all" />
+        Select all reachable
+      </label>
+      <span id="loc-selcount" class="loc-selcount">0 images selected</span>
+      <div class="loc-actionbar-spacer"></div>
+      <p class="loc-actionbar-note">
+        Edits are saved to each page's BookStack revision history (revertible).
+      </p>
+      <button id="loc-apply-btn" class="btn btn-primary" type="button" disabled>
+        <span class="btn-spinner" hidden></span>
+        Localize selected →
+      </button>
+    </div>
+  </main>
+
+  <!-- ===================== SETUP / SETTINGS ===================== -->
+  <div id="setup-screen" class="setup-screen" hidden>
+    <div class="setup-page">
+      <header class="setup-masthead">
+        <p class="setup-eyebrow">A local companion for your wiki</p>
+        <h1 class="setup-brand">BookStack <em>Companion</em></h1>
+        <p class="setup-sub">
+          Publish pages in seconds and rescue externally-hosted images from link rot.
+          Runs entirely on this machine — your API token never leaves it.
+        </p>
+      </header>
+
+      <form id="setup-form" class="setup-form" novalidate>
+        <h2 class="setup-form-title" id="setup-title">Connect your BookStack</h2>
+
+        <label class="field-label" for="setup-url">BookStack address</label>
+        <input id="setup-url" class="text-input" type="url"
+               placeholder="https://wiki.example.com" autocomplete="off" spellcheck="false" />
+        <p class="setup-help">The address you open in a browser to read the wiki.</p>
+
+        <div class="setup-token-grid">
+          <div>
+            <label class="field-label" for="setup-token-id">API token ID</label>
+            <input id="setup-token-id" class="text-input" type="text"
+                   autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <label class="field-label" for="setup-token-secret">API token secret</label>
+            <input id="setup-token-secret" class="text-input" type="password" autocomplete="off" />
+          </div>
+        </div>
+
+        <details class="setup-howto">
+          <summary>Where do I get a token?</summary>
+          <ol>
+            <li>In BookStack, open your profile menu → <strong>My Account</strong> → <strong>Access &amp; Security</strong> → in the <strong>API Tokens</strong> section, click <strong>Create Token</strong>.</li>
+            <li>Copy the <strong>Token ID</strong> and <strong>Token Secret</strong> into the fields above.</li>
+            <li>Your BookStack role needs the <strong>Access System API</strong> permission — ask an admin if the API Tokens section is missing.</li>
+          </ol>
+        </details>
+
+        <div id="setup-result" class="setup-result" aria-live="polite"></div>
+
+        <div class="setup-actions">
+          <button id="setup-test-btn" class="btn btn-secondary" type="button">
+            <span class="btn-spinner" hidden></span>
+            Test connection
+          </button>
+          <button id="setup-save-btn" class="btn btn-primary" type="submit" disabled>
+            Save and open
+          </button>
+        </div>
+        <p class="setup-save-hint" id="setup-save-hint">A successful test unlocks saving.</p>
+      </form>
+
+      <button id="setup-cancel-btn" class="setup-cancel" type="button" hidden>
+        Cancel — keep current settings
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Libraries (vendored locally) -->
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/hljs-powershell.min.js"></script>
+  <!-- HTML → Markdown, for editing pages authored in the WYSIWYG editor -->
+  <script src="vendor/turndown.min.js"></script>
+  <script src="vendor/turndown-plugin-gfm.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
