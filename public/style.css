@@ -1053,6 +1053,26 @@ input[type='checkbox'] {
   padding: 1px 6px;
   border-radius: 3px;
 }
+/* Issue reporter */
+.report-area {
+  resize: vertical;
+  line-height: 1.5;
+}
+.report-details {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.report-sub {
+  margin: -2px 0 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.modal-actions .report-copy {
+  margin-right: auto;
+}
+
 .install-steps {
   margin: 12px 0;
   padding-left: 20px;

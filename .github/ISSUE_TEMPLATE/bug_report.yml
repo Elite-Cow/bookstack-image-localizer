@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in the app didn't work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Tip:** in the app, click the 🐞 icon in the top-right and choose
+        **Continue on GitHub** — it fills this form in for you, diagnostics included.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What went wrong?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        I scanned a book with ~40 pages and clicked Localize selected.
+        I expected every image to be re-hosted, but three of them stayed external with a FAIL badge.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did it happen?
+      options:
+        - Scanning for images
+        - Localizing images
+        - First-run setup / connecting to BookStack
+        - Browser bridge extension
+        - Somewhere else
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: App details
+      description: >
+        Filled in automatically when you start the report from inside the app.
+        Otherwise, tell us the app version, your operating system, and your BookStack version.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, the affected page's editor type (Markdown or WYSIWYG), or the image host that misbehaved.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I'm using the latest release
+          required: false
+        - label: I've removed anything private from the details above
+          required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste API tokens here. If one was ever included by mistake,
+        revoke it in BookStack under **My Account → Access & Security**.

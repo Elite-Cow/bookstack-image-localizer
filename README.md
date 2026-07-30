@@ -111,6 +111,19 @@ offers a small companion **browser extension** — install it from inside the ap
 fetched through your own browser session automatically. Chrome, Edge, and
 Firefox are supported.
 
+## Something broke?
+
+Click the 🐞 icon in the app's top-right corner. Describe what happened, review
+the details it collected for you — app version, platform, browser, the last few
+errors — and hit **Continue on GitHub**: the issue form opens pre-filled in your
+browser, ready to submit.
+
+The app never sends anything by itself. You see everything before it goes
+anywhere, and you can edit or delete any of it. Your wiki address and API token
+are never collected.
+
+Prefer to file one by hand? [Open an issue](https://github.com/Elite-Cow/bookstack-image-localizer/issues/new/choose).
+
 ## FAQ
 
 **Can I undo a localization?**

@@ -18,7 +18,7 @@ const __dirname = (() => {
 
 const IS_PACKAGED = isSea();
 const APP_ID = 'bookstack-companion';
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 
 // Editions: the packaged (shared) app is image localization only; running from
@@ -600,6 +600,21 @@ if (IS_PACKAGED) {
 // Identity ping — lets a second launch detect an already-running instance.
 app.get('/api/app/identity', (_req, res) => {
   res.json({ app: APP_ID, version: APP_VERSION, edition: EDITION });
+});
+
+// Environment facts for a bug report. Deliberately excludes anything that
+// identifies the user's wiki: no URL, host, token, or content — only the
+// scheme, which matters for mixed-content and TLS issues.
+app.get('/api/diagnostics', (_req, res) => {
+  res.json({
+    version: APP_VERSION,
+    edition: EDITION,
+    packaged: IS_PACKAGED,
+    platform: `${process.platform} ${process.arch}`,
+    node: process.versions.node,
+    configured: state.configured,
+    bookstackScheme: state.url.startsWith('https://') ? 'https' : state.url ? 'http' : '—',
+  });
 });
 
 // Publish-tab routes are not part of the localizer-only edition.

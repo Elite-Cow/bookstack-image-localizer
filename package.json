@@ -1,6 +1,6 @@
 {
   "name": "bookstack-image-localizer",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Find externally-hosted images across a BookStack wiki and re-host them locally, so they survive link rot",
   "type": "module",
   "main": "start.js",

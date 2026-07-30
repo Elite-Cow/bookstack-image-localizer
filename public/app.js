@@ -817,6 +817,7 @@ function setBtnLoading(btn, loading) {
 
 // ---------- Toasts ----------
 function toast(type, message, isHtml = false, duration = 5000) {
+  if (type === 'error') noteError(message);
   const icons = { success: '✓', error: '✕', warn: '⚠' };
   const node = document.createElement('div');
   node.className = `toast toast-${type}`;
@@ -1112,6 +1113,7 @@ async function init() {
   initExtensionBridge();
   initSearch();
   initSetup();
+  initReporter();
 
   el.publishLabel = el.publishBtn.querySelector('.publish-label');
   buildEditorToolbar();
@@ -1377,6 +1379,141 @@ async function saveSetup(e) {
     setup.saveBtn.disabled = false;
     toast('error', `Could not save settings: ${err.message}`);
   }
+}
+
+// ===========================================================================
+// Issue reporter — assembles a bug report and hands it to GitHub pre-filled.
+// The app never transmits anything itself; the user reviews and submits.
+// ===========================================================================
+const ISSUE_URL = 'https://github.com/Elite-Cow/bookstack-image-localizer/issues/new';
+const MAX_ISSUE_URL = 6000; // stay well under browser/server URL limits
+
+const recentErrors = [];
+
+// Keep the last few failures so a report filed right after something broke
+// carries the evidence without the user having to remember it.
+function noteError(message) {
+  const text = String(message)
+    .replace(/<[^>]*>/g, '') // toasts may carry markup
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+  if (!text) return;
+  recentErrors.push(`[${new Date().toTimeString().slice(0, 8)}] ${text}`);
+  if (recentErrors.length > 6) recentErrors.shift();
+}
+
+function initReporter() {
+  document.getElementById('report-btn').addEventListener('click', openIssueReporter);
+  window.addEventListener('error', (e) => noteError(`${e.message} (${e.filename}:${e.lineno})`));
+  window.addEventListener('unhandledrejection', (e) => noteError(`Unhandled: ${e.reason}`));
+}
+
+async function buildReportDetails() {
+  let d = {};
+  try {
+    d = await api('/api/diagnostics');
+  } catch {
+    /* report is still useful without them */
+  }
+  const lines = [
+    `App        ${d.version || 'unknown'} (${d.edition || '?'}, ${d.packaged ? 'packaged app' : 'from source'})`,
+    `Platform   ${d.platform || 'unknown'} · Node ${d.node || 'unknown'}`,
+    `Browser    ${navigator.userAgent}`,
+    `BookStack  ${d.configured ? `connected over ${d.bookstackScheme}` : 'not configured yet'}`,
+    `Bridge     ${ext.available ? 'active' : 'not detected'}`,
+  ];
+  if (scanData?.totals) {
+    const t = scanData.totals;
+    lines.push(
+      `Last scan  ${t.pagesScanned} pages · ${t.externalImages} external images · ` +
+        `${t.reachable} reachable · ${t.unreachable} blocked`
+    );
+  }
+  if (recentErrors.length) {
+    lines.push('', 'Recent errors:', ...recentErrors.map((e) => `  ${e}`));
+  }
+  return lines.join('\n');
+}
+
+async function openIssueReporter() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-label="Report an issue">
+      <h3 class="modal-title">Report an issue</h3>
+      <div class="modal-body">
+        <p>This opens a pre-filled issue on GitHub in your browser. The app sends nothing
+        on its own — you review and submit it yourself.</p>
+
+        <label class="field-label" for="report-what">What went wrong?</label>
+        <textarea id="report-what" class="text-input report-area" rows="4"
+          placeholder="What you did, what you expected, and what happened instead."></textarea>
+
+        <label class="field-label" for="report-details">Details included with your report</label>
+        <p class="report-sub">Edit or delete anything you'd rather not share.</p>
+        <textarea id="report-details" class="text-input report-area report-details" rows="9"
+          spellcheck="false">Collecting…</textarea>
+        <p class="modal-note">Your wiki address and API token are never collected. Error text
+        can quote a page name or image URL — edit those out above if you'd rather not share
+        them.</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary report-cancel" type="button">Cancel</button>
+        <button class="btn btn-secondary report-copy" type="button">Copy details</button>
+        <button class="btn btn-primary report-open" type="button">Continue on GitHub →</button>
+      </div>
+    </div>`;
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    overlay.classList.add('modal-out');
+    overlay.addEventListener('animationend', () => overlay.remove(), { once: true });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+  };
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+
+  const what = overlay.querySelector('#report-what');
+  const details = overlay.querySelector('#report-details');
+  what.focus();
+  details.value = await buildReportDetails();
+
+  overlay.querySelector('.report-cancel').addEventListener('click', close);
+
+  overlay.querySelector('.report-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(details.value);
+      toast('success', 'Details copied to the clipboard.', false, 2500);
+    } catch {
+      details.select();
+      toast('warn', 'Copy failed — the details are selected, press Ctrl+C.');
+    }
+  });
+
+  overlay.querySelector('.report-open').addEventListener('click', () => {
+    if (!what.value.trim()) {
+      what.focus();
+      toast('warn', 'Add a short description of the problem first.', false, 3000);
+      return;
+    }
+    const url = new URL(ISSUE_URL);
+    url.searchParams.set('template', 'bug_report.yml');
+    url.searchParams.set('what-happened', what.value.trim());
+    url.searchParams.set('diagnostics', details.value);
+    // GitHub drops over-long URLs; trim the details rather than lose the report.
+    if (url.toString().length > MAX_ISSUE_URL) {
+      const room = details.value.length - (url.toString().length - MAX_ISSUE_URL) - 40;
+      url.searchParams.set('diagnostics', `${details.value.slice(0, Math.max(0, room))}\n…trimmed`);
+    }
+    window.open(url.toString(), '_blank', 'noopener');
+    close();
+  });
 }
 
 // ===========================================================================

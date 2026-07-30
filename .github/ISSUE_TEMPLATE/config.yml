@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup help and FAQ
+    url: https://github.com/Elite-Cow/bookstack-image-localizer#faq
+    about: Token permissions, the SmartScreen warning, and common questions are answered in the README.
+  - name: Question about BookStack itself
+    url: https://codeberg.org/bookstack/bookstack/issues
+    about: This app isn't part of BookStack. For wiki or server questions, ask the BookStack project.

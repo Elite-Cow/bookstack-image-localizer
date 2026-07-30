@@ -1,0 +1,28 @@
+name: Idea or feature request
+description: Suggest something the app should do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation you're in, rather than the solution you have in mind — it usually leads somewhere better.
+      placeholder: I want to run the scan on a schedule so I catch new external images before they rot.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: If you already have a solution in mind, describe it here.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: How big is your wiki, how often would you use this, anything else worth knowing.
+    validations:
+      required: false
