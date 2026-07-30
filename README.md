@@ -83,7 +83,7 @@ It starts a local server, opens your browser, and walks you through connecting.
 ### 2. Connect your wiki
 
 <div align="center">
-<img src="docs/setup.png" alt="First-run setup — test the connection, get the CONNECTED stamp, save" width="700" />
+<img src="docs/setup.png" alt="First-run setup — test the connection, get the CONNECTED stamp, save" width="640" />
 </div>
 
 You'll need a BookStack API token:
