@@ -1693,7 +1693,11 @@ const loc = {
 
 let locBooksLoaded = false;
 let locContents = null; // contents of the currently selected book
-let scanData = null; // last scan result
+let scanData = null; // last scan result: { totals, pages, skipped, throttled }
+let scanProgress = { done: 0, total: 0 }; // pages read so far in the current scan
+let scanAbort = null; // AbortController while a scan is streaming
+let applyRunning = false;
+let applyCancelled = false;
 let blockedUrlSet = new Set(); // URLs the server probe couldn't reach (need the browser bridge)
 let bridgeMetaDone = false; // whether bridge has already filled size/type for blocked images
 
@@ -1705,8 +1709,10 @@ function initLocalize() {
   loc.progressLabel = document.getElementById('loc-progress-label');
   loc.progressFill = document.getElementById('loc-progress-fill');
   loc.progressCount = document.getElementById('loc-progress-count');
+  loc.cancelBtn = document.getElementById('loc-cancel-btn');
   loc.scanBtn = document.getElementById('loc-scan-btn');
   loc.summary = document.getElementById('loc-summary');
+  loc.notice = document.getElementById('loc-notice');
   loc.results = document.getElementById('loc-results');
   loc.selectAll = document.getElementById('loc-select-all');
   loc.selCount = document.getElementById('loc-selcount');
@@ -1719,6 +1725,7 @@ function initLocalize() {
   loc.book.addEventListener('change', onLocBookChange);
   loc.chapter.addEventListener('change', populateLocPages);
   loc.scanBtn.addEventListener('click', runScan);
+  loc.cancelBtn.addEventListener('click', onLocCancel);
   loc.applyBtn.addEventListener('click', runApply);
   loc.selectAll.addEventListener('change', onSelectAll);
   loc.addCookieBtn.addEventListener('click', () => {
@@ -1949,7 +1956,32 @@ function populateLocPages() {
     pages.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 }
 
+// Read a newline-delimited-JSON response as a stream of events.
+async function* ndjsonStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) yield JSON.parse(line);
+    }
+  }
+  const tail = buf.trim();
+  if (tail) yield JSON.parse(tail);
+}
+
+// The scan streams results, so cards appear as pages are read rather than after
+// the whole wiki has been walked. Cancelling aborts the request, which closes
+// the socket and stops the server-side walk too.
 async function runScan() {
+  if (scanAbort || applyRunning) return;
+
   const scope = {};
   if (loc.page.value) scope.pageId = Number(loc.page.value);
   else if (loc.chapter.value) scope.chapterId = Number(loc.chapter.value);
@@ -1957,26 +1989,111 @@ async function runScan() {
   const auth = buildAuth();
   if (auth) scope.auth = auth;
 
+  scanAbort = new AbortController();
   setBtnLoading(loc.scanBtn, true);
   loc.scanBtn.disabled = true;
+  loc.applyBtn.disabled = true;
   loc.summary.innerHTML = '';
+  loc.notice.innerHTML = '';
   loc.results.innerHTML =
-    '<p class="loc-empty">Scanning… probing each external image. This can take a moment.</p>';
+    '<p class="loc-empty" id="loc-scan-placeholder">Scanning… reading pages and probing each external image.</p>';
+
+  scanData = { totals: null, pages: [], skipped: [] };
+  scanProgress = { done: 0, total: 0 };
+  blockedUrlSet = new Set();
+  bridgeMetaDone = false;
+  loc.selectAll.checked = false;
+  loc.selectAll.indeterminate = false;
+  showLocProgress('Listing pages…', 'Cancel scan');
+
+  let throttleWarned = false;
+  let cancelled = false;
 
   try {
-    scanData = await api('/api/localize/scan', {
+    const res = await fetch('/api/localize/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(scope),
+      signal: scanAbort.signal,
     });
-    renderScan(scanData);
+    // A failure before the stream starts (e.g. not configured) comes back as
+    // an ordinary JSON error payload.
+    if (!res.ok || !/ndjson/i.test(res.headers.get('content-type') || '')) {
+      let message = `Request failed (${res.status})`;
+      try {
+        message = (await res.json()).error || message;
+      } catch {
+        /* keep the status-based message */
+      }
+      throw new Error(message);
+    }
+
+    for await (const ev of ndjsonStream(res)) {
+      if (ev.type === 'start') {
+        scanProgress.total = ev.pagesTotal;
+        updateLocProgress(0, ev.pagesTotal, 'Scanning…', 'pages');
+      } else if (ev.type === 'progress') {
+        scanProgress = { done: ev.done, total: ev.total };
+        updateLocProgress(ev.done, ev.total, `Scanning — ${ev.name}`, 'pages');
+      } else if (ev.type === 'page') {
+        appendScanPage(ev.page);
+      } else if (ev.type === 'throttled') {
+        if (!throttleWarned) {
+          throttleWarned = true;
+          toast(
+            'warn',
+            'BookStack is rate-limiting the API — the scan is backing off and will keep going. ' +
+              'It just takes longer.',
+            false,
+            7000
+          );
+        }
+      } else if (ev.type === 'error') {
+        throw new Error(ev.error);
+      } else if (ev.type === 'done') {
+        scanData.totals = ev.totals;
+        scanData.skipped = ev.skipped || [];
+        scanData.throttled = ev.throttled || 0;
+      }
+    }
   } catch (err) {
-    loc.results.innerHTML = `<p class="loc-empty">Scan failed: ${escapeHtml(err.message)}</p>`;
-    toast('error', `Scan failed: ${err.message}`);
+    if (err.name === 'AbortError') {
+      cancelled = true;
+      scanData.totals = totalsFromScan();
+      toast('warn', 'Scan cancelled — showing what was found so far.', false, 4000);
+    } else {
+      loc.results.innerHTML = `<p class="loc-empty">Scan failed: ${escapeHtml(err.message)}</p>`;
+      toast('error', `Scan failed: ${err.message}`);
+      scanData = null;
+    }
   } finally {
+    scanAbort = null;
     setBtnLoading(loc.scanBtn, false);
     loc.scanBtn.disabled = false;
+    finishLocProgress(cancelled ? 'Scan cancelled' : 'Scan complete');
   }
+
+  if (scanData) finalizeScan(cancelled);
+}
+
+// Totals for a scan that was cut short — the server never sent its own.
+function totalsFromScan() {
+  const t = {
+    pagesScanned: scanProgress.done,
+    pagesSkipped: 0,
+    pagesWithExternal: scanData.pages.length,
+    externalImages: 0,
+    reachable: 0,
+    unreachable: 0,
+  };
+  scanData.pages.forEach((p) =>
+    p.images.forEach((i) => {
+      t.externalImages += 1;
+      if (i.ok) t.reachable += 1;
+      else t.unreachable += 1;
+    })
+  );
+  return t;
 }
 
 function renderSummaryChips(t) {
@@ -1990,6 +2107,9 @@ function renderSummaryChips(t) {
     : '';
   loc.summary.innerHTML = [
     `<span class="loc-chip"><strong>${t.pagesScanned}</strong> pages scanned</span>`,
+    t.pagesSkipped
+      ? `<span class="loc-chip chip-warn"><strong>${t.pagesSkipped}</strong> unreadable</span>`
+      : '',
     `<span class="loc-chip"><strong>${t.pagesWithExternal}</strong> with external images</span>`,
     `<span class="loc-chip"><strong>${t.externalImages}</strong> external images</span>`,
     `<span class="loc-chip chip-ok"><strong>${t.reachable}</strong> reachable</span>`,
@@ -1999,30 +2119,83 @@ function renderSummaryChips(t) {
     .join('');
 }
 
-function renderScan(data) {
-  renderSummaryChips(data.totals);
+// Add one page's card as its scan result arrives.
+function appendScanPage(p) {
+  scanData.pages.push(p);
+  p.images.forEach((i) => {
+    if (!i.ok) blockedUrlSet.add(i.url);
+  });
 
-  if (!data.pages.length) {
-    loc.results.innerHTML =
-      '<p class="loc-empty">No externally-hosted images found in this scope. 🎉</p>';
-    updateSelCount();
-    return;
-  }
+  document.getElementById('loc-scan-placeholder')?.remove();
 
-  blockedUrlSet = new Set();
-  bridgeMetaDone = false;
-  data.pages.forEach((p) => p.images.forEach((i) => { if (!i.ok) blockedUrlSet.add(i.url); }));
-
-  loc.results.innerHTML = data.pages.map(renderPageCard).join('');
-  loc.results
+  const holder = document.createElement('div');
+  holder.innerHTML = renderPageCard(p);
+  const card = holder.firstElementChild;
+  card
     .querySelectorAll('.loc-img-check')
     .forEach((cb) => cb.addEventListener('change', onCheckChange));
-  loc.results
-    .querySelectorAll('.loc-page-check')
-    .forEach((cb) => cb.addEventListener('change', onPageCheckChange));
+  card.querySelector('.loc-page-check').addEventListener('change', onPageCheckChange);
+  loc.results.appendChild(card);
+
   syncPageChecks();
   updateSelCount();
-  handleBlockedHosts(data);
+}
+
+// Wrap up once the stream ends (or is cancelled): totals, warnings, bridge work.
+function finalizeScan(cancelled) {
+  renderSummaryChips(scanData.totals);
+  renderScanNotices(cancelled);
+
+  const placeholder = document.getElementById('loc-scan-placeholder');
+  if (placeholder) {
+    placeholder.textContent = cancelled
+      ? 'Scan cancelled before any externally-hosted images were found.'
+      : 'No externally-hosted images found in this scope. 🎉';
+  }
+
+  syncPageChecks();
+  updateSelCount();
+  if (scanData.pages.length) handleBlockedHosts(scanData);
+}
+
+// Surface what the scan could NOT do. A page that failed to load is not a page
+// with no external images, and the two must never look the same.
+function renderScanNotices(cancelled) {
+  const parts = [];
+
+  if (cancelled) {
+    parts.push(
+      `<p class="loc-note loc-note-warn">Scan cancelled after ${scanProgress.done} of ` +
+        `${scanProgress.total} pages — these results are partial.</p>`
+    );
+  }
+
+  const skipped = scanData.skipped || [];
+  if (skipped.length) {
+    const items = skipped
+      .map(
+        (s) =>
+          `<li><strong>${escapeHtml(s.name || `page ${s.id}`)}</strong> — ${escapeHtml(s.reason)}</li>`
+      )
+      .join('');
+    parts.push(
+      `<details class="loc-note loc-note-warn">
+         <summary>${skipped.length} page${skipped.length === 1 ? '' : 's'} could not be read — ` +
+        `not scanned, so any external images on ${skipped.length === 1 ? 'it' : 'them'} are unaccounted for</summary>
+         <ul class="loc-skipped-list">${items}</ul>
+       </details>`
+    );
+  }
+
+  if (scanData.throttled) {
+    parts.push(
+      `<p class="loc-note">BookStack rate-limited this scan ${scanData.throttled} time` +
+        `${scanData.throttled === 1 ? '' : 's'}; it backed off and retried, so nothing was skipped ` +
+        `for that reason.</p>`
+    );
+  }
+
+  loc.notice.innerHTML = parts.join('');
 }
 
 function renderPageCard(p) {
@@ -2175,7 +2348,9 @@ function syncPageChecks() {
 function updateSelCount() {
   const n = loc.results.querySelectorAll('.loc-img-check:checked').length;
   loc.selCount.textContent = `${n} image${n === 1 ? '' : 's'} selected`;
-  loc.applyBtn.disabled = n === 0;
+  // Cards stream in during a scan, so guard against starting an apply against a
+  // selection that is still growing.
+  loc.applyBtn.disabled = n === 0 || !!scanAbort || applyRunning;
   syncSelectAll();
 }
 
@@ -2209,6 +2384,7 @@ function findRow(card, url) {
 }
 
 async function runApply() {
+  if (scanAbort || applyRunning) return;
   const selections = getSelections();
   if (!selections.length) return;
   const total = selections.reduce((n, s) => n + s.urls.length, 0);
@@ -2229,16 +2405,24 @@ async function runApply() {
   setBtnLoading(loc.applyBtn, true);
   loc.applyBtn.disabled = true;
   loc.scanBtn.disabled = true;
+  applyRunning = true;
+  applyCancelled = false;
 
   let okCount = 0;
   let failCount = 0;
   let processed = 0;
+  let stopped = false;
+  showLocProgress('Starting…', 'Stop');
   updateLocProgress(processed, total, 'Starting…');
 
   for (const sel of selections) {
+    if (applyCancelled) {
+      stopped = true;
+      break;
+    }
     const card = loc.results.querySelector(`.loc-page-card[data-page="${sel.pageId}"]`);
     const statusEl = markCardWorking(card);
-    updateLocProgress(processed, total, sel.name);
+    updateLocProgress(processed, total, `Localizing — ${sel.name}`);
     try {
       // For images the server probe couldn't reach, fetch the bytes through the
       // browser bridge (passes Cloudflare) and hand them to the server.
@@ -2271,40 +2455,72 @@ async function runApply() {
       toast('error', `Page "${sel.name}": ${err.message}`);
     }
     processed += sel.urls.length;
-    updateLocProgress(processed, total);
+    updateLocProgress(processed, total, `Localizing — ${sel.name}`);
   }
 
-  finishLocProgress(okCount, failCount);
+  applyRunning = false;
+  finishLocProgress(
+    stopped
+      ? `Stopped — ${okCount} localized, ${total - processed} not attempted`
+      : failCount
+      ? `Finished — ${okCount} localized, ${failCount} failed`
+      : `Finished — ${okCount} localized`
+  );
   setBtnLoading(loc.applyBtn, false);
   loc.scanBtn.disabled = false;
   updateSelCount();
   toast(
-    failCount ? 'warn' : 'success',
+    failCount || stopped ? 'warn' : 'success',
     `Localized ${okCount} image${okCount === 1 ? '' : 's'}` +
       (failCount ? `, ${failCount} failed (see rows)` : '') +
+      (stopped ? `, stopped with ${total - processed} not attempted` : '') +
       '. Re-scan to confirm.'
   );
 }
 
-// Progress strip above the action bar — advances as each page's images finish.
-function updateLocProgress(processed, total, pageName) {
+// Progress strip above the action bar — shared by scan and apply.
+function showLocProgress(label, cancelLabel) {
   loc.progress.hidden = false;
-  // Keep a sliver visible from the start so the bar reads as "working".
-  const pct = Math.max(3, Math.round((processed / total) * 100));
-  loc.progressFill.style.width = `${pct}%`;
-  loc.progressCount.textContent = `${processed} / ${total} images`;
-  if (pageName) loc.progressLabel.textContent = `Localizing — ${pageName}`;
+  loc.progressFill.style.width = '3%';
+  loc.progressLabel.textContent = label;
+  loc.progressCount.textContent = '';
+  loc.cancelBtn.hidden = !cancelLabel;
+  loc.cancelBtn.disabled = false;
+  loc.cancelBtn.textContent = cancelLabel || 'Cancel';
 }
 
-function finishLocProgress(okCount, failCount) {
+function updateLocProgress(done, total, label, unit = 'images') {
+  loc.progress.hidden = false;
+  // Keep a sliver visible from the start so the bar reads as "working".
+  const pct = total ? Math.max(3, Math.round((done / total) * 100)) : 3;
+  loc.progressFill.style.width = `${pct}%`;
+  loc.progressCount.textContent = `${done} / ${total} ${unit}`;
+  if (label) loc.progressLabel.textContent = label;
+}
+
+function finishLocProgress(label) {
   loc.progressFill.style.width = '100%';
-  loc.progressLabel.textContent = failCount
-    ? `Finished — ${okCount} localized, ${failCount} failed`
-    : `Finished — ${okCount} localized`;
+  loc.progressLabel.textContent = label;
+  loc.cancelBtn.hidden = true;
   setTimeout(() => {
     loc.progress.hidden = true;
     loc.progressFill.style.width = '0%';
   }, 2500);
+}
+
+// One cancel button serves whichever job is running. A scan aborts its request
+// outright; an apply stops after the page in flight, so no page is left
+// half-rewritten.
+function onLocCancel() {
+  if (scanAbort) {
+    scanAbort.abort();
+    return;
+  }
+  if (applyRunning) {
+    applyCancelled = true;
+    loc.cancelBtn.disabled = true;
+    loc.progressLabel.textContent = 'Stopping after this page…';
+  }
 }
 
 function markCardWorking(card) {

@@ -18,7 +18,7 @@ const __dirname = (() => {
 
 const IS_PACKAGED = isSea();
 const APP_ID = 'bookstack-companion';
-const APP_VERSION = '2.0.2';
+const APP_VERSION = '2.1.0';
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 
 // Editions: the packaged (shared) app is image localization only; running from
@@ -178,6 +178,63 @@ async function testBookstack({ url, token_id, token_secret }) {
 // ---------------------------------------------------------------------------
 // BookStack proxy helper
 // ---------------------------------------------------------------------------
+
+// BookStack throttles the API (180 requests/minute by default). A full-wiki
+// scan blows straight through that, so every call backs off and retries on 429
+// rather than letting pages silently drop out of the results.
+const RATE_LIMIT_RETRIES = 5;
+const MAX_BACKOFF_MS = 60_000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// How long to wait before retrying: honour Retry-After (delta-seconds or an
+// HTTP date) when the server sends one, else exponential backoff. Capped so a
+// malformed header can't park the app for hours.
+function retryDelayMs(res, attempt) {
+  const raw = res.headers.get('retry-after');
+  if (raw) {
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, MAX_BACKOFF_MS);
+    const when = Date.parse(raw);
+    if (!Number.isNaN(when)) return Math.min(Math.max(0, when - Date.now()), MAX_BACKOFF_MS);
+  }
+  return Math.min(1000 * 2 ** attempt, 30_000);
+}
+
+// fetch() that retries rate-limited responses. 503 is only retried when it
+// carries a Retry-After — that's the server saying "come back later"; a bare
+// 503 is a real failure and shouldn't stall the caller for half a minute.
+async function rateLimitedFetch(url, init, onThrottle) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, init);
+    const retryable = res.status === 429 || (res.status === 503 && res.headers.get('retry-after'));
+    if (!retryable || attempt >= RATE_LIMIT_RETRIES) return res;
+    const wait = retryDelayMs(res, attempt);
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* body already consumed or errored — nothing to release */
+    }
+    onThrottle?.(wait, attempt + 1);
+    await sleep(wait);
+  }
+}
+
+// Run fn over items with at most `limit` in flight. Results keep input order.
+async function mapPool(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 async function bookstackFetch(path, options = {}) {
   if (!state.configured) {
     return {
@@ -186,16 +243,21 @@ async function bookstackFetch(path, options = {}) {
       data: { error: { message: 'BookStack connection is not set up yet — open Settings.' } },
     };
   }
+  const { onThrottle, ...init } = options;
   const target = `${state.url}${path}`;
-  const res = await fetch(target, {
-    ...options,
-    headers: {
-      Authorization: authHeader(),
-      Accept: 'application/json',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers,
+  const res = await rateLimitedFetch(
+    target,
+    {
+      ...init,
+      headers: {
+        Authorization: authHeader(),
+        Accept: 'application/json',
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
+      },
     },
-  });
+    onThrottle
+  );
 
   const text = await res.text();
   let data;
@@ -205,6 +267,15 @@ async function bookstackFetch(path, options = {}) {
     data = { raw: text };
   }
   return { ok: res.ok, status: res.status, data };
+}
+
+// Undici surfaces connection failures as a bare "fetch failed" — dig out the
+// underlying cause so the UI can say something the user can act on.
+function networkErrorMessage(err) {
+  if (err?.name === 'TimeoutError') return 'BookStack did not respond in time.';
+  const code = err?.cause?.code;
+  if (code) return `Could not reach BookStack (${code}) — check the address in Settings.`;
+  return err?.message || 'unknown error';
 }
 
 // Pull a human-readable message out of a BookStack error payload.
@@ -445,11 +516,15 @@ async function probeImage(url, auth) {
   }
 }
 
-// Resolve a scope ({ bookId?, chapterId?, pageId? }) to a flat list of page summaries.
-async function listPagesInScope({ bookId, chapterId, pageId } = {}) {
+// Resolve a scope ({ bookId?, chapterId?, pageId? }) to a flat list of page
+// summaries. Returns { pages, error } — a partial listing is never reported as
+// a complete one, because "scan found nothing" and "scan couldn't look" must
+// not be indistinguishable.
+async function listPagesInScope({ bookId, chapterId, pageId } = {}, onThrottle) {
   if (pageId) {
-    const { ok, data } = await bookstackFetch(`/api/pages/${pageId}`);
-    return ok ? [{ id: data.id, name: data.name, book_id: data.book_id }] : [];
+    const { ok, status, data } = await bookstackFetch(`/api/pages/${pageId}`, { onThrottle });
+    if (!ok) return { pages: [], error: extractError(data, status) };
+    return { pages: [{ id: data.id, name: data.name, book_id: data.book_id }] };
   }
   const pages = [];
   let offset = 0;
@@ -458,14 +533,19 @@ async function listPagesInScope({ bookId, chapterId, pageId } = {}) {
     let q = `?count=${count}&offset=${offset}`;
     if (chapterId) q += `&filter%5Bchapter_id%5D=${chapterId}`;
     else if (bookId) q += `&filter%5Bbook_id%5D=${bookId}`;
-    const { ok, data } = await bookstackFetch(`/api/pages${q}`);
-    if (!ok) break;
+    const { ok, status, data } = await bookstackFetch(`/api/pages${q}`, { onThrottle });
+    if (!ok) {
+      return {
+        pages,
+        error: `Could not list pages${pages.length ? ` past ${pages.length}` : ''}: ${extractError(data, status)}`,
+      };
+    }
     const batch = data.data || [];
     pages.push(...batch);
     if (batch.length < count) break;
     offset += count;
   }
-  return pages;
+  return { pages };
 }
 
 // Choose the editable content field for a page based on its editor type.
@@ -546,7 +626,7 @@ function looksLikeImage(buf) {
 }
 
 // Upload bytes into BookStack's image gallery, attached to a page.
-async function uploadToGallery(pageId, buf, filename, contentType) {
+async function uploadToGallery(pageId, buf, filename, contentType, onThrottle) {
   const form = new FormData();
   form.append('type', 'gallery');
   form.append('uploaded_to', String(pageId));
@@ -555,11 +635,15 @@ async function uploadToGallery(pageId, buf, filename, contentType) {
     new Blob([buf], { type: contentType || 'application/octet-stream' }),
     filename
   );
-  const res = await fetch(`${state.url}/api/image-gallery`, {
-    method: 'POST',
-    headers: { Authorization: authHeader(), Accept: 'application/json' },
-    body: form,
-  });
+  const res = await rateLimitedFetch(
+    `${state.url}/api/image-gallery`,
+    {
+      method: 'POST',
+      headers: { Authorization: authHeader(), Accept: 'application/json' },
+      body: form,
+    },
+    onThrottle
+  );
   const text = await res.text();
   let data;
   try {
@@ -827,49 +911,124 @@ app.put('/api/bookstack/pages/:id', fullOnly, async (req, res) => {
 // Image localizer routes
 // ---------------------------------------------------------------------------
 
-// Dry-run: scan a scope and report external images found per page. Changes nothing.
+// How many pages are read from BookStack at once, and how many images from a
+// single page are probed at once. The product bounds outbound connections.
+const SCAN_PAGE_CONCURRENCY = 5;
+const SCAN_PROBE_CONCURRENCY = 6;
+
+// Dry-run: scan a scope and report external images found per page. Changes
+// nothing. Streams newline-delimited JSON so a full-wiki scan shows progress as
+// it goes instead of hanging on one long request — and so the client can cancel
+// it by aborting the connection.
+//
+// Events: {type:'start'|'progress'|'page'|'throttled'|'error'|'done'}
 app.post('/api/localize/scan', async (req, res) => {
+  const { bookId, chapterId, pageId, auth } = req.body ?? {};
+
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Accel-Buffering', 'no'); // don't let a proxy buffer the stream
+  res.flushHeaders();
+
+  // The client cancels by aborting its fetch, which closes the socket.
+  let cancelled = false;
+  res.on('close', () => {
+    if (!res.writableEnded) cancelled = true;
+  });
+
+  const send = (event) => {
+    if (!cancelled) res.write(`${JSON.stringify(event)}\n`);
+  };
+
+  let throttled = 0;
+  const onThrottle = (waitMs) => {
+    throttled += 1;
+    send({ type: 'throttled', waitMs });
+  };
+
+  const totals = {
+    pagesScanned: 0,
+    pagesSkipped: 0,
+    pagesWithExternal: 0,
+    externalImages: 0,
+    reachable: 0,
+    unreachable: 0,
+  };
+  const skipped = [];
+
   try {
-    const { bookId, chapterId, pageId, auth } = req.body ?? {};
-    const summaries = await listPagesInScope({ bookId, chapterId, pageId });
-
-    const pages = [];
-    const totals = { pagesScanned: summaries.length, pagesWithExternal: 0, externalImages: 0, reachable: 0, unreachable: 0 };
-
-    for (const summary of summaries) {
-      const { ok, data } = await bookstackFetch(`/api/pages/${summary.id}`);
-      if (!ok) continue;
-
-      const { content } = pageSource(data);
-      const externalUrls = [...new Set(extractImageUrls(content).filter(isExternalImage))];
-      if (!externalUrls.length) continue;
-
-      // Probe each external image concurrently.
-      const images = await Promise.all(
-        externalUrls.map(async (url) => ({ url, ...(await probeImage(url, auth)) }))
-      );
-
-      images.forEach((img) => {
-        totals.externalImages += 1;
-        if (img.ok) totals.reachable += 1;
-        else totals.unreachable += 1;
-      });
-      totals.pagesWithExternal += 1;
-
-      pages.push({
-        id: data.id,
-        name: data.name,
-        book_id: data.book_id,
-        editor: data.editor,
-        link: `${state.url}/link/${data.id}`,
-        images,
-      });
+    const { pages: summaries, error } = await listPagesInScope(
+      { bookId, chapterId, pageId },
+      onThrottle
+    );
+    if (error && !summaries.length) {
+      send({ type: 'error', error });
+      return res.end();
     }
+    if (error) skipped.push({ id: null, name: '(page listing)', reason: error });
 
-    res.json({ totals, pages });
+    send({ type: 'start', pagesTotal: summaries.length });
+
+    let done = 0;
+    await mapPool(summaries, SCAN_PAGE_CONCURRENCY, async (summary) => {
+      if (cancelled) return;
+      try {
+        const { ok, status, data } = await bookstackFetch(`/api/pages/${summary.id}`, {
+          onThrottle,
+        });
+        if (!ok) {
+          totals.pagesSkipped += 1;
+          skipped.push({
+            id: summary.id,
+            name: summary.name,
+            reason: extractError(data, status),
+          });
+          return;
+        }
+        totals.pagesScanned += 1;
+
+        const { content } = pageSource(data);
+        const externalUrls = [...new Set(extractImageUrls(content).filter(isExternalImage))];
+        if (!externalUrls.length) return;
+
+        const images = await mapPool(externalUrls, SCAN_PROBE_CONCURRENCY, async (url) => ({
+          url,
+          ...(await probeImage(url, auth)),
+        }));
+        if (cancelled) return;
+
+        images.forEach((img) => {
+          totals.externalImages += 1;
+          if (img.ok) totals.reachable += 1;
+          else totals.unreachable += 1;
+        });
+        totals.pagesWithExternal += 1;
+
+        send({
+          type: 'page',
+          page: {
+            id: data.id,
+            name: data.name,
+            book_id: data.book_id,
+            editor: data.editor,
+            link: `${state.url}/link/${data.id}`,
+            images,
+          },
+        });
+      } catch (err) {
+        totals.pagesSkipped += 1;
+        skipped.push({ id: summary.id, name: summary.name, reason: err.message });
+      } finally {
+        done += 1;
+        send({ type: 'progress', done, total: summaries.length, name: summary.name });
+      }
+    });
+
+    send({ type: 'done', totals, skipped, throttled, cancelled });
   } catch (err) {
-    res.status(502).json({ error: `Scan failed: ${err.message}` });
+    send({ type: 'error', error: `Scan failed: ${networkErrorMessage(err)}` });
   }
+  res.end();
 });
 
 // Apply: download the selected external images, re-host them in BookStack, and
@@ -1002,10 +1161,13 @@ function startServer(port, remaining = 10) {
       console.error(`Could not start server: ${err.message}`);
       process.exit(1);
     }
-    // If the port is held by another copy of this app, just open that one.
+    // If the port is held by another copy of this app, just open that one —
+    // but honour BSC_NO_OPEN here too. Launching a browser at a server the
+    // caller didn't ask to see is how a test instance ends up being pointed at
+    // a live wiki.
     if (await isOurInstance(port)) {
-      console.log(`BookStack Companion is already running at http://localhost:${port} — opening it.`);
-      openBrowser(`http://localhost:${port}`);
+      console.log(`BookStack Companion is already running at http://localhost:${port}.`);
+      if (WANT_OPEN) openBrowser(`http://localhost:${port}`);
       process.exit(0);
     }
     startServer(port + 1, remaining - 1);

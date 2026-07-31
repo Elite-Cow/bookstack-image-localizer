@@ -1387,6 +1387,48 @@ input[type='checkbox'] {
 .loc-chip.chip-bridge strong {
   color: var(--accent-hover);
 }
+.loc-chip.chip-warn {
+  border-color: rgba(217, 164, 65, 0.5);
+  color: var(--amber);
+}
+.loc-chip.chip-warn strong {
+  color: var(--amber);
+}
+
+/* Scan caveats — what the scan could not see */
+.loc-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.loc-notice:empty {
+  display: none;
+}
+.loc-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin: 0;
+}
+.loc-note-warn {
+  color: var(--amber);
+}
+details.loc-note > summary {
+  cursor: pointer;
+}
+.loc-skipped-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.loc-skipped-list strong {
+  color: var(--text);
+  font-weight: 600;
+}
 
 .localize-body {
   flex: 1 1 auto;
@@ -1605,6 +1647,11 @@ input[type='checkbox'] {
   font-size: 11px;
   color: var(--text);
   white-space: nowrap;
+}
+.loc-cancel-btn {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
 }
 
 /* Action bar */
